@@ -13,6 +13,8 @@ import logging
 import shutil
 import json
 
+from functools import partial
+
 # Get environment variable
 settingsDir = os.environ["DECKY_PLUGIN_SETTINGS_DIR"]
 
@@ -21,11 +23,43 @@ import asyncio
 DEPSPATH = Path(decky_plugin.DECKY_PLUGIN_DIR) / "bin"
 if not DEPSPATH.exists():
     DEPSPATH = Path(decky_plugin.DECKY_PLUGIN_DIR) / "backend/out"
+
+logging.info(f"DEPSPATH: {DEPSPATH}")
+
 GSTPLUGINSPATH = DEPSPATH / "gstreamer-1.0"
+logging.info(f"GSTPLUGINSPATH: {GSTPLUGINSPATH}")
+
+# Fix for subprocess issue from Decky 3.1.1
+# Using partial to avoid changing lines several times
+# 
+# Define blank LD_LIBRARY_PATH
+# Create a more comprehensive custom environment now that we avoid shells
+custom_env = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": decky_plugin.DECKY_HOME,
+    "XDG_RUNTIME_DIR": "/run/user/1000",
+    "XDG_SESSION_TYPE": "wayland"
+}
+
+#custom_env = os.environ.copy()
+#custom_env["LD_LIBRARY_PATH"] = ""
+
+# Customized c_subprocess_run with custom env
+c_subprocess_run = partial(subprocess.run, env=custom_env)
+
+c_subprocess_popen = partial(subprocess.Popen, env=custom_env)
 
 std_out_file_path = Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "decky-recorder-std-out.log"
 std_out_file = open(std_out_file_path, "w")
 std_err_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "decky-recorder-std-err.log", "w")
+
+# Create separate log files that you can ignore
+gst_out_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "gstreamer-std-out.log", "w", buffering=1)
+gst_err_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "gstreamer-std-err.log", "w", buffering=1)
+
+ffmpeg_out_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "ffmpeg-std-out.log", "w", buffering=1)
+ffmpeg_err_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "ffmpeg-std-err.log", "w", buffering=1)
+
 
 logger = decky_plugin.logger
 
@@ -36,6 +70,8 @@ log_file_handler = TimedRotatingFileHandler(log_file, when="midnight", backupCou
 log_file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 logger.handlers.clear()
 logger.addHandler(log_file_handler)
+
+logger.info(f'Custom ENV: {custom_env}')
 
 try:
     sys.path = [str(DEPSPATH / "psutil")] + sys.path
@@ -66,11 +102,42 @@ def in_gamemode():
             pass
     return False
 
-def get_cmd_output(cmd, log = True):
+def get_cmd_output(cmd, log=True, stdout_file=None, stderr_file=None):
     if log:
         logger.info(f"Command: {cmd}")
 
-    return subprocess.getoutput(cmd).strip()
+    split = cmd.split(' ')
+    if split.__contains__('ffmpeg') or split.__contains__('gst-launch-1.0'):
+        logger.info(f'Processing command with arguments: {split}, env: {custom_env}')
+    else:
+        logger.info(f'Running command: {split[0]} (not printing args)')
+
+    # Use expanded environment now that we avoid shell conflicts
+    clean_env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": decky_plugin.DECKY_HOME,
+        "LD_LIBRARY_PATH": f"{str(DEPSPATH)}:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu",
+        "XDG_RUNTIME_DIR": "/run/user/1000"
+    }
+
+    # Determine output destinations
+    if stdout_file or stderr_file:
+        # Use provided file handles or default to capture
+        result = subprocess.run(
+            split,
+            stdout=stdout_file if stdout_file else subprocess.PIPE,
+            stderr=stderr_file if stderr_file else subprocess.PIPE,
+            env=clean_env,
+            text=True
+        )
+        return result.stdout.strip() if result.stdout else ""
+    else:
+        # Default behavior - capture both
+        result = subprocess.run(split, capture_output=True, env=clean_env, text=True)
+        return result.stdout.strip()
+
+
+
 
 def unload_pa_modules(search_string):
     module_list = get_cmd_output(f"pactl list short modules | grep '{search_string}' | awk '{{print $1}}'").split("\n")
@@ -143,8 +210,13 @@ class Plugin:
             except Exception:
                 logger.exception(f"watchdog exception! {Exception.message}")
 
-            # Restart recording on sleep wake up to resolve issues
-            wakeup_count = int(get_cmd_output("cat /sys/power/wakeup_count", log=False))
+                # Restart recording on sleep wake up to resolve issues
+            try:
+                with open("/sys/power/wakeup_count", "r") as f:
+                    wakeup_count = int(f.read().strip())
+            except:
+                wakeup_count = 0
+
             prev_wakeup_count = await Plugin.get_wakeup_count(self)
             # The wakeup buffer increments twice before system is fully started
             # up, so only update the buffer when wakeup count is greater than
@@ -177,24 +249,22 @@ class Plugin:
 
             await Plugin.clear_rogue_gst_processes(self)
 
-            os.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"
-            os.environ["XDG_SESSION_TYPE"] = "wayland"
-            os.environ["HOME"] = decky_plugin.DECKY_HOME
+            # Direct execution with reduced logging
+            gst_env = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(decky_plugin.DECKY_HOME),
+                "GST_VAAPI_ALL_DRIVERS": "1",
+                "GST_PLUGIN_PATH": str(GSTPLUGINSPATH),
+                "LD_LIBRARY_PATH": f"{str(DEPSPATH)}:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu",
+                "GST_DEBUG": "0",  # (0=none, 1=error, 2=warning, etc.)
+                "XDG_RUNTIME_DIR": "/run/user/1000",
+                "XDG_SESSION_TYPE": "wayland"
+            }
 
-            # Start command including plugin path and ld_lib path
-            start_command = (
-                "GST_VAAPI_ALL_DRIVERS=1 GST_PLUGIN_PATH={} LD_LIBRARY_PATH={} gst-launch-1.0 -e -vvv".format(
-                    str(GSTPLUGINSPATH), str(DEPSPATH)
-                )
-            )
 
-            # Video Pipeline
-            if not self._rolling:
-                videoPipeline = f"pipewiresrc do-timestamp=true ! vaapipostproc ! queue ! vaapih264enc ! h264parse ! {muxer} name=sink !"
-            else:
-                videoPipeline = "pipewiresrc do-timestamp=true ! vaapipostproc ! queue ! vaapih264enc ! h264parse !"
 
-            cmd = "{} {}".format(start_command, videoPipeline)
+            # Build command as a list to avoid shell=True
+            cmd_args = ["gst-launch-1.0"]
 
             # If mode is localFile
             if self._mode == "localFile":
@@ -205,27 +275,33 @@ class Plugin:
                     self._filepath = (
                         f"{self._rollingRecordingFolder}/{self._rollingRecordingPrefix}_%02d.{self._fileformat}"
                     )
-                if not self._rolling:
+                    # Rolling recording pipeline with splitmuxsink
+                    videoPipeline = f"pipewiresrc do-timestamp=true ! vaapipostproc ! queue ! vaapih264enc ! h264parse ! splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480"
+                else:
                     logger.info("Setting local filepath no rolling")
                     directory = pathlib.Path(f"{self._localFilePath}/{app_name}")
                     logger.debug(f"Creating directory if not exists: {directory.__fspath__()}")
                     directory.mkdir(exist_ok=True)
 
                     file_name = f"{app_name}-{dateTime}"
-                    logger.debug(f"Filename for recording: {rolling_file_name}")
-                    self._filepath = f"{rolling_directory.joinpath(rolling_file_name)}.{self._fileformat}"
-                    logger.debug(f"Filepath for recording: {rolling_file_path}")
+                    logger.debug(f"Filename for recording: {file_name}")
+                    self._filepath = f"{directory.joinpath(file_name)}.{self._fileformat}"
+                    logger.debug(f"Filepath for recording: {self._filepath}")
 
-                    fileSinkPipeline = f' filesink location="{self._filepath}" '
-                else:
-                    logger.info("Setting local filepath")
-                    fileSinkPipeline = f" splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480"
-                cmd = cmd + fileSinkPipeline
+                    # Non-rolling recording pipeline with direct file output
+                    videoPipeline = f"pipewiresrc do-timestamp=true ! vaapipostproc ! queue ! vaapih264enc ! h264parse ! {muxer} name=sink ! filesink location=\"{self._filepath}\""
             else:
                 logger.info(f"Mode {self._mode} does not exist")
                 return
 
-            deckyRecordingSinkExists = subprocess.run(f"pactl list sinks | grep '{self._deckySinkModuleName}'", shell=True).returncode == 0
+            cmd_args.extend(videoPipeline.split())
+
+            # Check if decky recording sink exists without using shell
+            try:
+                pactl_output = subprocess.run(["pactl", "list", "sinks"], capture_output=True, env=gst_env, text=True)
+                deckyRecordingSinkExists = self._deckySinkModuleName in pactl_output.stdout
+            except:
+                deckyRecordingSinkExists = False
 
             if deckyRecordingSinkExists:
                 logger.info(f"{self._deckySinkModuleName} already exists, rebuilding sink for safety")
@@ -233,14 +309,16 @@ class Plugin:
 
             await Plugin.create_decky_pa_sink(self)
 
-            cmd = (
-                cmd
-                + f' pulsesrc device="{self._deckySinkModuleName}.monitor" ! audio/x-raw, channels=2 ! audioconvert ! avenc_aac bitrate={self._audioBitrate} ! sink.audio_0'
-            )
+            # Add audio pipeline with better buffering to handle performance issues
+            # Use fdkaacenc - it's available and better than faacenc
+            # Reduce audio processing load
+            audio_pipeline = f'pulsesrc device="{self._deckySinkModuleName}.monitor" buffer-time=200000 ! audio/x-raw, channels=2, rate=44100 ! queue max-size-buffers=2000 max-size-time=2000000000 ! audioconvert ! audioresample ! fdkaacenc bitrate=128000 ! sink.audio_0'
+            cmd_args.extend(audio_pipeline.split())
+
 
             # Starts the capture process
-            logger.info("Command: " + cmd)
-            self._recording_process = subprocess.Popen(cmd, shell=True, stdout=std_out_file, stderr=std_err_file)
+            logger.info("Starting capture with command: " + " ".join(cmd_args))
+            self._recording_process = subprocess.Popen(cmd_args, env=gst_env, stdout=gst_out_file, stderr=gst_err_file)
             logger.info("Recording started!")
         except Exception:
             await Plugin.stop_capturing(self)
@@ -263,7 +341,7 @@ class Plugin:
             if not self._rolling:
                 # process the gstreamer output with ffmpeg again so that it can be uploaded to Twitter/X
                 logger.info("Process manual recording file with ffmpeg")
-                get_cmd_output(f'ffmpeg -i "{self._filepath}.temp" -c copy "{self._filepath}"')
+                get_cmd_output(f'ffmpeg -i "{self._filepath}.temp" -c copy "{self._filepath}"', stdout_file=ffmpeg_out_file, stderr_file=ffmpeg_err_file)
                 get_cmd_output(f'rm "{self._filepath}.temp"')
                 logger.info("Process manual recording file with ffmpeg finished.")
         except Exception:
@@ -559,6 +637,11 @@ class Plugin:
                 if max_time - ftime <= clip_duration:
                     actual_dur = max_time - ftime
                     files_to_stitch.append(f)
+
+            if not files_to_stitch:
+                logger.warn("No files to stitch for rolling recording")
+                return -1
+
             with open(self._rollingRecordingFolder + "/files", "w") as ff:
                 for f in reversed(files_to_stitch):
                     ff.write(f"file {str(f)}\n")
@@ -573,13 +656,33 @@ class Plugin:
             rolling_file_path = f"{rolling_directory.joinpath(rolling_file_name)}.{self._fileformat}"
             logger.debug(f"Filepath for recording: {rolling_file_path}")
 
+            # Use expanded environment for FFmpeg
+            ffmpeg_env = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(decky_plugin.DECKY_HOME),
+                "LD_LIBRARY_PATH": f"{str(DEPSPATH)}:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu",
+                "XDG_RUNTIME_DIR": "/run/user/1000"
+            }
+
+            ffmpeg_args = [
+                "ffmpeg", "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
+                "-vaapi_device", "/dev/dri/renderD128", "-f", "concat", "-safe", "0",
+                "-i", f"{self._rollingRecordingFolder}/files", "-c", "copy", rolling_file_path
+            ]
+
+            logger.info(f'Attempting to save rolling recording using FFmpeg. Args: {" ".join(ffmpeg_args)}')
             ffmpeg = subprocess.Popen(
-                f'ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -vaapi_device /dev/dri/renderD128 -f concat -safe 0 -i {self._rollingRecordingFolder}/files -c copy "{rolling_file_path}"',
-                shell=True,
-                stdout=std_out_file,
-                stderr=std_err_file,
+                ffmpeg_args,
+                env=ffmpeg_env,
+                stdout=ffmpeg_out_file,
+                stderr=ffmpeg_err_file,
             )
-            ffmpeg.wait()
+            ret_code = ffmpeg.wait()
+
+            if ret_code != 0:
+                logger.error(f"FFmpeg failed with return code {ret_code}")
+                return -1
+
             os.remove(self._rollingRecordingFolder + "/files")
             self._last_clip_time = time.time()
             logger.info("finish save rolling function")
