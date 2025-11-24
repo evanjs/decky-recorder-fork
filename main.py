@@ -308,7 +308,15 @@ class Plugin:
                         videoPipeline = f'pipewiresrc target-object=gamescope do-timestamp=true ! queue ! videoconvert ! queue ! vaapih264enc ! h264parse ! splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480'
                 else:
                     logger.info("Setting local filepath no rolling")
-                    directory = Path(f"{self._localFilePath}/{app_name}")
+                    if self._app_named_directories:
+                        logger.debug("Setting local filepath for rolling recording (app-named directories)")
+
+                        directory = pathlib.Path(f"{self._localFilePath}/{app_name}")
+                        logger.debug(f"Directory (App Name): {directory}")
+                    else:
+                        directory = pathlib.Path(f"{self._localFilePath}")
+                        logger.debug(f"Directory (No App Name): {directory}")
+
                     logger.debug(f"Creating directory if not exists: {directory.__fspath__()}")
                     directory.mkdir(exist_ok=True)
 
@@ -602,6 +610,19 @@ class Plugin:
         logger.info("Current local file format: " + self._fileformat)
         return self._fileformat
 
+    async def enable_app_named_directories(self):
+        logger.info(f"App named directories: ON")
+        self._app_named_directories = True
+        await Plugin.saveConfig(self)
+
+    async def disable_app_named_directories(self):
+        logger.info(f"App named directories: OFF")
+        self._app_named_directories = False
+        await Plugin.saveConfig(self)
+
+    async def get_app_named_directories(self):
+        return self._app_named_directories
+
     async def loadConfig(self):
         logger.info("Loading settings from: {}".format(os.path.join(settingsDir, "decky-loader-settings.json")))
         ### TODO: IMPLEMENT ###
@@ -616,6 +637,7 @@ class Plugin:
         self._micEnabled = self._settings.getSetting("mic_enabled", False)
         self._micGain = self._settings.getSetting("mic_gain", 13.0)
         self._noiseReductionPercent = self._settings.getSetting("noise_reduction_percent", 50.0)
+        self._app_named_directories = self._settings.getSetting("app_named_directories", False)
 
         # Need this for initialization only honestly
         await Plugin.saveConfig(self)
@@ -688,7 +710,12 @@ class Plugin:
                     ff.write(f"file {str(f)}\n")
 
             dateTime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            rolling_directory = Path(f"{self._localFilePath}/{app_name}")
+
+            if self._app_named_directories:
+                rolling_directory = Path(f"{self._localFilePath}/{app_name}")
+            else:
+                rolling_directory = Path(f"{self._localFilePath}")
+
             logger.debug(f"Creating directory if not exists: {rolling_directory.__fspath__()}")
             rolling_directory.mkdir(exist_ok=True)
 

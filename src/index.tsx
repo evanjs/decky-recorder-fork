@@ -73,6 +73,14 @@ class DeckyRecorderLogic
 		}
 	}
 
+    toggleAppNamedDirectories = async  (appNamedDirectoriesEnabled: boolean) => {
+        if (!appNamedDirectoriesEnabled) {
+            await this.serverAPI.callPluginMethod('enable_app_named_directories', {});
+        } else {
+            await this.serverAPI.callPluginMethod('disable_app_named_directories', {});
+        }
+    }
+
 	updateMicGain = async (newMicGain: number) => {
 		await this.serverAPI.callPluginMethod('update_mic_gain', {new_gain: newMicGain});
 	}
@@ -159,6 +167,8 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 
 	const [micSourcesList, setMicSourcesList] = useState<DropdownOption[]>([{data: "NA", label: "Default Mic"}]);
 
+    const [appNamedDirectoriesEnabled, setAppNamedDirectoriesEnabled] = useState<boolean>(false);
+
 	// const audioBitrateOption128 = { data: "128", label: "128 Kbps" } as SingleDropdownOption
 	// const audioBitrateOption192 = { data: "192", label: "192 Kbps" } as SingleDropdownOption
 	// const audioBitrateOption256 = { data: "256", label: "256 Kbps" } as SingleDropdownOption
@@ -203,6 +213,9 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 		} else {
 			setMicSource({data: getMicSource.result as string, label: getMicSource.result})
 		}
+
+        const getAppNamedDirectoriesEnabled = await serverAPI.callPluginMethod('get_app_named_directories', {});
+        setAppNamedDirectoriesEnabled(getAppNamedDirectoriesEnabled.result as boolean);
 
 		// const getModeResponse = await serverAPI.callPluginMethod('get_current_mode', {});
 		// setMode(getModeResponse.result as string);
@@ -300,6 +313,10 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 		logic.toggleMicrophone(microphoneEnabled);
 	}
 
+    const appNamedDirectoriesToggled = async () => {
+        logic.toggleAppNamedDirectories(appNamedDirectoriesEnabled);
+    }
+
 	const changeMicGain = async () => {
 		logic.updateMicGain(micGain)
 	}
@@ -338,7 +355,18 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 					checked={isRolling}
 					onChange={(e) => { setRolling(e); rollingToggled(); }}
 				/>
-				<div>Steam + Start saves a 30 second clip in replay mode. If replay mode is off, this shortcut will enable it.</div>
+				<div><s>Steam + Start saves a 30 second clip in replay mode. If replay mode is off, this shortcut will enable it.</>></div>
+                <div>Shortcut is currently non-functional. Please record manually using the options below</div>
+
+                <PanelSectionRow>
+                    <ToggleField
+                        label="App Named Directories"
+                        disabled={isCapturing}
+                        checked={appNamedDirectoriesEnabled}
+                        onChange={(e) => { setAppNamedDirectoriesEnabled(e); appNamedDirectoriesToggled(); }}
+                    />
+                    <div>Save recordings to directories based on the name of the currently running application.</div>
+                </PanelSectionRow>
 				<ToggleField
 					label="Enable Microphone Recording"
 					checked={microphoneEnabled}
