@@ -691,22 +691,27 @@ class Plugin:
         try:
             clip_duration = float(clip_duration)
             files = list(Path(self._rollingRecordingFolder).glob(f"{self._rollingRecordingPrefix}*.{self._fileformat}"))
-            times = [os.path.getctime(p) for p in files]
-            ft = sorted(zip(files, times), key=lambda x: -x[1])
+            files = sorted(files, key=lambda p: os.path.getctime(p))
+
             max_time = time.time()
             files_to_stitch = []
+
+            for f in reversed(files):
+                files_to_stitch.append(f)
+                if max_time - os.path.getctime(f) >= clip_duration:
+                    break
+
+            files_to_stitch = list(reversed(files_to_stitch))
             actual_dur = 0.0
-            for f, ftime in ft:
-                if max_time - ftime <= clip_duration:
-                    actual_dur = max_time - ftime
-                    files_to_stitch.append(f)
+            if files_to_stitch:
+                actual_dur = max_time - os.path.getctime(files_to_stitch[0])
 
             if not files_to_stitch:
                 logger.warn("No files to stitch for rolling recording")
                 return -1
 
             with open(self._rollingRecordingFolder + "/files", "w") as ff:
-                for f in reversed(files_to_stitch):
+                for f in files_to_stitch:
                     ff.write(f"file {str(f)}\n")
 
             dateTime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -735,7 +740,8 @@ class Plugin:
             ffmpeg_args = [
                 "ffmpeg", "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
                 "-vaapi_device", "/dev/dri/renderD128", "-f", "concat", "-safe", "0",
-                "-i", f"{self._rollingRecordingFolder}/files", "-c", "copy", rolling_file_path
+                "-i", f"{self._rollingRecordingFolder}/files", "-t", str(clip_duration),
+                "-c", "copy", rolling_file_path
             ]
 
             logger.info(f'Attempting to save rolling recording using FFmpeg. Args: {" ".join(ffmpeg_args)}')
