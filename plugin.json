@@ -6,5 +6,6 @@
     "tags": ["Capture"],
     "description": "Record your games with Decky Recorder",
     "image": "https://github.com/safijari/decky-recorder-fork/raw/main/decky-recorder-screenshot.png"
-  }
+  },
+  "api_version": 1
 }

@@ -1,9 +1,14 @@
 import {
+	call,
+	FileSelectionType,
+	openFilePicker,
+	toaster
+} from "@decky/api";
+import {
 	ButtonItem,
 	definePlugin,
 	PanelSection,
 	PanelSectionRow,
-	ServerAPI,
 	staticClasses,
 	Dropdown,
 	DropdownOption,
@@ -11,31 +16,28 @@ import {
 	Router,
 	ToggleField,
 	SliderField
-} from "decky-frontend-lib";
+} from "@decky/ui";
 
 import {
-	VFC,
 	useState,
-	useEffect
+	useEffect,
+	FC
 } from "react";
 
 import { FaVideo } from "react-icons/fa";
 
+const defaultAppName = "Decky-Recorder";
+
 class DeckyRecorderLogic
 	{
-	serverAPI: ServerAPI;
 	pressedAtStart: number = Date.now();
 	pressedAtHome: number = Date.now();
-
-	constructor(serverAPI: ServerAPI) {
-		this.serverAPI = serverAPI;
-	}
 
 	notify = async (message: string, duration: number = 1000, body: string = "") => {
 		if (!body) {
 			body = message;
 		}
-		await this.serverAPI.toaster.toast({
+		await toaster.toast({
 			title: message,
 			body: body,
 			duration: duration,
@@ -44,8 +46,8 @@ class DeckyRecorderLogic
 	}
 
 	saveRollingRecording = async  (duration: number) => {
-		const res = await this.serverAPI.callPluginMethod('save_rolling_recording', { clip_duration: duration, app_name: Router.MainRunningApp?.display_name});
-		let r = (res.result as number)
+		const res = await call<[clip_duration: number, app_name: string], number>("save_rolling_recording", duration, Router.MainRunningApp?.display_name ?? defaultAppName);
+		let r = (res as number)
 		if (r > 0) {
 			await this.notify("Saved clip");
 		} else if (r == 0) {
@@ -59,38 +61,39 @@ class DeckyRecorderLogic
 
 	toggleRolling = async (isRolling: boolean) => {
 		if (!isRolling) {
-			await this.serverAPI.callPluginMethod('enable_rolling', {});
+			await call<[], number>("enable_rolling");
 		} else {
-			await this.serverAPI.callPluginMethod('disable_rolling', {});
+			await call<[], number>("disable_rolling");
 		}
 	}
 
 	toggleMicrophone = async (microphoneEnabled: boolean) => {
 		if (!microphoneEnabled) {
-			await this.serverAPI.callPluginMethod('enable_microphone', {});
+			await call<[], number>("enable_microphone");
 		} else {
-			await this.serverAPI.callPluginMethod('disable_microphone', {});
+			await call<[], number>("disable_microphone");
 		}
 	}
 
     toggleAppNamedDirectories = async  (appNamedDirectoriesEnabled: boolean) => {
         if (!appNamedDirectoriesEnabled) {
-            await this.serverAPI.callPluginMethod('enable_app_named_directories', {});
+            await call<[], void>("enable_app_named_directories");
         } else {
-            await this.serverAPI.callPluginMethod('disable_app_named_directories', {});
+            await call<[], void>("disable_app_named_directories");
         }
     }
 
 	updateMicGain = async (newMicGain: number) => {
-		await this.serverAPI.callPluginMethod('update_mic_gain', {new_gain: newMicGain});
+		await call<[new_gain: number], void>("update_mic_gain", newMicGain);
 	}
 
 	updateNoiseReductionPercent = async (newNoiseReductionPercent: number) => {
-		await this.serverAPI.callPluginMethod('update_noise_reduction_percent', {new_percent: newNoiseReductionPercent});
+		await call<[new_percent: number], void>("update_noise_reduction_percent", newNoiseReductionPercent);
 	}
 
 	getParsedMicSources = async () => {
-		return JSON.parse((await this.serverAPI.callPluginMethod('get_mic_sources', {})).result as string);
+		let result = await call<[], string>("get_mic_sources");
+		return JSON.parse(result);
 	}
 
 	handleButtonInput = async (controllerIndex: number, gamepadButton: any, isButtonPressed: boolean) => {
@@ -115,8 +118,8 @@ class DeckyRecorderLogic
 			setTimeout(() => {
 				(Router as any).EnableHomeAndQuickAccessButtons();
 			}, 1000)
-			const isRolling = await this.serverAPI.callPluginMethod("is_rolling", {});
-			if (isRolling.result as boolean) {
+			const isRolling = await call<[], boolean>("is_rolling");
+			if (isRolling) {
 				await this.saveRollingRecording(30);
 			} else {
 				await this.notify("Enabling replay mode", 1500, "Steam + Start to save last 30 seconds");
@@ -148,7 +151,8 @@ class DeckyRecorderLogic
 
 }
 
-const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = ({ serverAPI, logic }) => {
+
+const DeckyRecorder: FC<{ logic: DeckyRecorderLogic }> = ({ logic }) => {
 
 	const [isCapturing, setCapturing] = useState<boolean>(false);
 
@@ -186,36 +190,38 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 	const [localFileFormat, setLocalFileFormat] = useState<DropdownOption>(formatOptionMp4);
 
 	const initState = async () => {
-		const getIsCapturingResponse = await serverAPI.callPluginMethod('is_capturing', {});
-		setCapturing(getIsCapturingResponse.result as boolean);
+		const getIsCapturingResponse = await call<[], boolean>("is_capturing");
+		setCapturing(getIsCapturingResponse);
 
-		const getIsRollingResponse = await serverAPI.callPluginMethod('is_rolling', {});
-		setRolling(getIsRollingResponse.result as boolean);
+		const getIsRollingResponse = await call<[], boolean>("is_rolling");
+		setRolling(getIsRollingResponse);
 
-		const getMicEnabled = await serverAPI.callPluginMethod('is_mic_enabled', {});
-		setMicrophone(getMicEnabled.result as boolean);
+		const getMicEnabled = await call<[], boolean>("is_mic_enabled");
+		setMicrophone(getMicEnabled);
 
-		const getMicGain = await serverAPI.callPluginMethod('get_mic_gain', {});
-		setMicGain(getMicGain.result as number);
+		const getMicGain = await call<[], number>("get_mic_gain");
+		setMicGain(getMicGain);
 
-		const getEnhancedNoiseCancellation = await serverAPI.callPluginMethod('enhanced_noise_binary_exists', {});
-		setEnhancedNoiseCancellation(getEnhancedNoiseCancellation.result as boolean);
+		const getEnhancedNoiseCancellation = await call<[], boolean>("enhanced_noise_binary_exists");
+		setEnhancedNoiseCancellation(getEnhancedNoiseCancellation);
 
-		const getNoiseReductionPercent = await serverAPI.callPluginMethod('get_noise_reduction_percent', {});
-		setNoiseReductionPercent(getNoiseReductionPercent.result as number);
+		const getNoiseReductionPercent = await call<[], number>("get_noise_reduction_percent");
+		setNoiseReductionPercent(getNoiseReductionPercent);
 
-		let getMicSource = await serverAPI.callPluginMethod('get_mic_source', {});
-		if (getMicSource.result as string == "NA") {
-			getMicSource = await serverAPI.callPluginMethod('get_default_mic', {});
-			setMicSource({data: getMicSource.result as string, label: "Default Mic"})
-		} else if ((getMicSource.result as string).includes("alsa_input")){
-			setMicSource({data: getMicSource.result as string, label: "Default Mic"})
+		
+
+		let getMicSource = await call<[], string>("get_mic_source");
+		if (getMicSource == "NA") {
+			getMicSource = await call<[], string>("get_default_mic");
+			setMicSource({data: getMicSource, label: "Default Mic"})
+		} else if (getMicSource.includes("alsa_input")){
+			setMicSource({data: getMicSource, label: "Default Mic"})
 		} else {
-			setMicSource({data: getMicSource.result as string, label: getMicSource.result})
+			setMicSource({data: getMicSource, label: getMicSource})
 		}
 
-        const getAppNamedDirectoriesEnabled = await serverAPI.callPluginMethod('get_app_named_directories', {});
-        setAppNamedDirectoriesEnabled(getAppNamedDirectoriesEnabled.result as boolean);
+		const getAppNamedDirectoriesEnabled = await call<[], boolean>("get_app_named_directories");
+        setAppNamedDirectoriesEnabled(getAppNamedDirectoriesEnabled);
 
 		// const getModeResponse = await serverAPI.callPluginMethod('get_current_mode', {});
 		// setMode(getModeResponse.result as string);
@@ -240,11 +246,11 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 		// 		break;
 		// }
 
-		const getLocalFilepathResponse = await serverAPI.callPluginMethod('get_local_filepath', {})
-		setLocalFilePath(getLocalFilepathResponse.result as string);
+		const getLocalFilepathResponse = await call<[], string>("get_local_filepath");
+		setLocalFilePath(getLocalFilepathResponse);
 
-		const getLocalFileFormatResponse = await serverAPI.callPluginMethod('get_local_fileformat', {})
-		const localFileFormatResponseString: string = getLocalFileFormatResponse.result as string;
+		const getLocalFileFormatResponse = await call<[], string>("get_local_fileformat");
+		const localFileFormatResponseString: string = getLocalFileFormatResponse;
 		if (localFileFormatResponseString == "mp4") {
 			setLocalFileFormat(formatOptionMp4)
 		} else if (localFileFormatResponseString == "mkv") {
@@ -261,18 +267,18 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 	const recordingButtonPress = async () => {
 		if (isCapturing === false) {
 			setCapturing(true);
-			await serverAPI.callPluginMethod('start_capturing', {app_name: Router.MainRunningApp?.display_name});
+			await call<[app_name: string], void>('start_capturing', Router.MainRunningApp?.display_name ?? defaultAppName);
 			Router.CloseSideMenus();
 		} else {
 			setCapturing(false);
-			await serverAPI.callPluginMethod('stop_capturing', {});
+			await call<[]>('stop_capturing');
 		}
 	}
 
 	const pickFolder = async () => {
-		const filePickerResponse = await serverAPI.openFilePicker(localFilePath, false);
+		const filePickerResponse = await openFilePicker(FileSelectionType.FOLDER, localFilePath, false);
 		setLocalFilePath(filePickerResponse.path)
-		await serverAPI.callPluginMethod('set_local_filepath', {localFilePath: filePickerResponse.path});
+		await call<[localFilePath: string], void>("set_local_filepath", filePickerResponse.path);
 	}
 
 	const rollingRecordButtonPress = async (duration: number) => {
@@ -355,7 +361,7 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 					checked={isRolling}
 					onChange={(e) => { setRolling(e); rollingToggled(); }}
 				/>
-				<div><s>Steam + Start saves a 30 second clip in replay mode. If replay mode is off, this shortcut will enable it.</>></div>
+				<div><s>Steam + Start saves a 30 second clip in replay mode. If replay mode is off, this shortcut will enable it.</s></div>
                 <div>Shortcut is currently non-functional. Please record manually using the options below</div>
 
                 <PanelSectionRow>
@@ -413,7 +419,7 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 								}}
 								onChange={(newSource) => {
 									setMicSource(newSource.data);
-									serverAPI.callPluginMethod('set_mic_source', { new_mic_source: newSource.data });
+									call<[new_mic_source: any], boolean>("set_mic_source", newSource.data);
 								}}
 							/>
 						</PanelSectionRow>
@@ -455,7 +461,7 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 					rgOptions={formatOptions}
 					selectedOption={localFileFormat}
 					onChange={(newLocalFileFormat) => {
-						serverAPI.callPluginMethod('set_local_fileformat', { fileformat: newLocalFileFormat.data });
+						call<[fileformat: DropdownOption], void>("set_local_fileformat", newLocalFileFormat.data);
 						setLocalFileFormat(newLocalFileFormat);
 					}}
 				/>
@@ -485,29 +491,15 @@ const DeckyRecorder: VFC<{ serverAPI: ServerAPI, logic: DeckyRecorderLogic }> = 
 };
 
 
-export default definePlugin((serverApi: ServerAPI) => {
-	let logic = new DeckyRecorderLogic(serverApi);
+export default definePlugin(() => {
+	let logic = new DeckyRecorderLogic();
 	let input_register = window.SteamClient.Input.RegisterForControllerInputMessages(logic.handleButtonInput);
-	// let all_register = window.SteamClient.Input.RegisterForControllerCommandMessages(logic.handleCommandInput);
-
-	const inst = window.SteamUIStore?.ActiveWindowInstance;
-  	if (!inst) return console.warn("ActiveWindowInstance not found");
-
-	const origHome  = inst.OnHomeButtonPressed?.bind(inst);
-	inst.OnHomeButtonPressed = (...args: any) => {
-		logic.handleHomePress(origHome, args);
-	};
-
-	inst.OnHomeButton
-
-	//Router.MainRunningApp?.display_name
 	return {
 		title: <div className={staticClasses.Title}>Decky Recorder</div>,
-		content: <DeckyRecorder serverAPI={serverApi} logic={logic} />,
+		content: <DeckyRecorder logic={logic} />,
 		icon: <FaVideo />,
 		onDismount() {
 			input_register.unregister();
-			all_register.unregister();
 		},
 		alwaysRender: true
 	};
