@@ -254,8 +254,8 @@ class Plugin:
                 "PATH": "/usr/bin:/bin",
                 "HOME": str(decky_plugin.DECKY_HOME),
                 "GST_VAAPI_ALL_DRIVERS": "1",
-                # Use system plugins, add bundled path as secondary
-                "GST_PLUGIN_PATH": f"/usr/lib/gstreamer-1.0:{str(GSTPLUGINSPATH)}",
+                # Use bundled path; Use system as secondary
+                "GST_PLUGIN_PATH": f"{str(GSTPLUGINSPATH)}:/usr/lib/gstreamer-1.0",
                 "LD_LIBRARY_PATH": f"{str(DEPSPATH)}:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu",
                 "GST_DEBUG": "0",  # (0=none, 1=error, 2=warning, etc.)
                 "XDG_RUNTIME_DIR": "/run/user/1000",
