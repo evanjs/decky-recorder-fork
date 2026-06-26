@@ -677,7 +677,8 @@ class Plugin:
         app_name = str(app_name).replace(":", " ").replace("/", " ")
         if app_name == "" or app_name == "null":
             app_name = "Decky-Recorder"
-        clip_duration = int(clip_duration)
+
+        clip_duration = float(int(clip_duration))
         logger.info("Called save rolling function")
 
         if not await Plugin.is_capturing(self):
@@ -688,31 +689,35 @@ class Plugin:
         if time.time() - self._last_clip_time < 2:
             logger.info("Too early to record another clip")
             return 0
+
+        save_id = f"{os.getpid()}-{int(time.time() * 1000)}"
+        files_list_path = f"{self._rollingRecordingFolder}/files-{save_id}.txt"
+        temp_concat_path = f"{self._rollingRecordingFolder}/decky-recorder-concat-{save_id}.{self._fileformat}"
+
         try:
-            clip_duration = float(clip_duration)
             files = list(Path(self._rollingRecordingFolder).glob(f"{self._rollingRecordingPrefix}*.{self._fileformat}"))
-            files = sorted(files, key=lambda p: os.path.getctime(p))
+            files = sorted(files, key=lambda p: os.path.getmtime(p))
 
             max_time = time.time()
+            concat_margin = 10.0
             files_to_stitch = []
 
             for f in reversed(files):
                 files_to_stitch.append(f)
-                if max_time - os.path.getctime(f) >= clip_duration:
+                if max_time - os.path.getmtime(f) >= clip_duration + concat_margin:
                     break
 
             files_to_stitch = list(reversed(files_to_stitch))
-            actual_dur = 0.0
-            if files_to_stitch:
-                actual_dur = max_time - os.path.getctime(files_to_stitch[0])
 
             if not files_to_stitch:
                 logger.warn("No files to stitch for rolling recording")
                 return -1
 
-            with open(self._rollingRecordingFolder + "/files", "w") as ff:
-                for f in files_to_stitch:
-                    ff.write(f"file {str(f)}\n")
+            actual_dur = max_time - os.path.getmtime(files_to_stitch[0])
+            logger.info(
+                f"Selected {len(files_to_stitch)} rolling files covering approximately "
+                f"{actual_dur:.2f}s for requested {clip_duration:.2f}s clip"
+            )
 
             dateTime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -724,7 +729,7 @@ class Plugin:
             logger.debug(f"Creating directory if not exists: {rolling_directory.__fspath__()}")
             rolling_directory.mkdir(exist_ok=True)
 
-            rolling_file_name = f"{app_name}-{clip_duration}s-{dateTime}"
+            rolling_file_name = f"{app_name}-{int(clip_duration)}s-{dateTime}"
             logger.debug(f"Filename for recording: {rolling_file_name}")
             rolling_file_path = f"{rolling_directory.joinpath(rolling_file_name)}.{self._fileformat}"
             logger.debug(f"Filepath for recording: {rolling_file_path}")
@@ -737,30 +742,92 @@ class Plugin:
                 "XDG_RUNTIME_DIR": "/run/user/1000"
             }
 
-            ffmpeg_args = [
-                "ffmpeg", "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
-                "-vaapi_device", "/dev/dri/renderD128", "-f", "concat", "-safe", "0",
-                "-i", f"{self._rollingRecordingFolder}/files", "-t", str(clip_duration),
-                "-c", "copy", rolling_file_path
+            def write_concat_file(paths):
+                with open(files_list_path, "w") as ff:
+                    for path in paths:
+                        escaped_path = str(path).replace("\\", "\\\\").replace("'", "\\'")
+                        ff.write(f"file '{escaped_path}'\n")
+
+            concat_candidates = files_to_stitch
+
+            for attempt in range(2):
+                write_concat_file(concat_candidates)
+
+                ffmpeg_concat_args = [
+                    "ffmpeg", "-y", "-fflags", "+genpts",
+                    "-f", "concat", "-safe", "0",
+                    "-i", files_list_path,
+                    "-map", "0",
+                    "-c", "copy",
+                    temp_concat_path
+                ]
+
+                logger.info(
+                    f'Attempting rolling concat using FFmpeg. '
+                    f'Files: {len(concat_candidates)} Args: {" ".join(ffmpeg_concat_args)}'
+                )
+
+                ffmpeg = subprocess.Popen(
+                    ffmpeg_concat_args,
+                    env=ffmpeg_env,
+                    stdout=ffmpeg_out_file,
+                    stderr=ffmpeg_err_file,
+                )
+                concat_ret_code = ffmpeg.wait()
+
+                if concat_ret_code == 0:
+                    break
+
+                logger.warn(f"FFmpeg concat failed with return code {concat_ret_code}")
+
+                try:
+                    os.remove(temp_concat_path)
+                except FileNotFoundError:
+                    pass
+
+                if attempt == 0 and len(concat_candidates) > 1:
+                    logger.warn("Retrying rolling concat without newest segment in case it is still active")
+                    concat_candidates = concat_candidates[:-1]
+                else:
+                    logger.error("FFmpeg concat failed after retry")
+                    return -1
+
+            ffmpeg_trim_args = [
+                "ffmpeg", "-y",
+                "-sseof", f"-{clip_duration}",
+                "-i", temp_concat_path,
+                "-t", str(clip_duration),
+                "-map", "0",
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                rolling_file_path
             ]
 
-            logger.info(f'Attempting to save rolling recording using FFmpeg. Args: {" ".join(ffmpeg_args)}')
+            logger.info(f'Attempting tail trim using FFmpeg. Args: {" ".join(ffmpeg_trim_args)}')
             ffmpeg = subprocess.Popen(
-                ffmpeg_args,
+                ffmpeg_trim_args,
                 env=ffmpeg_env,
                 stdout=ffmpeg_out_file,
                 stderr=ffmpeg_err_file,
             )
-            ret_code = ffmpeg.wait()
+            trim_ret_code = ffmpeg.wait()
 
-            if ret_code != 0:
-                logger.error(f"FFmpeg failed with return code {ret_code}")
+            if trim_ret_code != 0:
+                logger.error(f"FFmpeg tail trim failed with return code {trim_ret_code}")
                 return -1
 
-            os.remove(self._rollingRecordingFolder + "/files")
             self._last_clip_time = time.time()
             logger.info("finish save rolling function")
-            return int(actual_dur)
+            return int(min(actual_dur, clip_duration))
         except Exception:
             logger.info(traceback.format_exc())
+        finally:
+            for temp_path in [files_list_path, temp_concat_path]:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    logger.warn(f"Failed to remove temporary rolling save file: {temp_path}")
+
         return -1
