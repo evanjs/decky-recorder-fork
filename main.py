@@ -300,12 +300,13 @@ class Plugin:
                     self._filepath = (
                         f"{self._rollingRecordingFolder}/{self._rollingRecordingPrefix}_%02d.{self._fileformat}"
                     )
-                    # Rolling recording pipeline with splitmuxsink
-                    # Simplified pipeline - remove explicit format conversions
+                    # Rolling recording pipeline with splitmuxsink.
+                    # Copy PipeWire frames before downstream processing so gamescope's source
+                    # buffers are returned even while conversion or encoding is busy.
                     if video_node_id:
-                        videoPipeline = f'pipewiresrc path={video_node_id} do-timestamp=true ! queue ! videoconvert ! queue ! vaapih264enc ! h264parse ! splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480'
+                        videoPipeline = f'pipewiresrc path={video_node_id} do-timestamp=true always-copy=true ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! queue ! vaapih264enc ! h264parse ! splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480'
                     else:
-                        videoPipeline = f'pipewiresrc target-object=gamescope do-timestamp=true ! queue ! videoconvert ! queue ! vaapih264enc ! h264parse ! splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480'
+                        videoPipeline = f'pipewiresrc target-object=gamescope do-timestamp=true always-copy=true ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 leaky=downstream ! videoconvert ! queue ! vaapih264enc ! h264parse ! splitmuxsink name=sink muxer={muxer} muxer-pad-map=x-pad-map,audio=vid location={self._filepath} max-size-time=1000000000 max-files=480'
                 else:
                     logger.info("Setting local filepath no rolling")
                     if self._app_named_directories:
